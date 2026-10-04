@@ -28,6 +28,7 @@ render();
 
 state.candidates = state.candidates || [];
 state.autoAccepted = state.autoAccepted || [];
+state.commonCostStates = state.commonCostStates || [];
 
 const AUTO_MONTHS = {"január":1,"február":2,"március":3,"április":4,"május":5,"június":6,"július":7,"augusztus":8,"szeptember":9,"október":10,"november":11,"december":12};
 
@@ -95,17 +96,52 @@ function autoParse(text,file,mode){
   if(family==="COMMON_COST_STATEMENT")return autoParseCommon(text,file,mode);
   return [autoCandidate(file,mode,"unknown","Ismeretlen dokumentumtípus",0,"","","","review","UNKNOWN")];
 }
+function addAutoCommonCostState(next){
+  const existing=state.commonCostStates.find(x=>x.effectiveFrom===next.effectiveFrom);
+  if(existing){
+    if(JSON.stringify(existing)===JSON.stringify(next))return true;
+    alert("Erre a hónapra már van eltérő közös költség állapot.");
+    return false;
+  }
+  state.commonCostStates.push(next);
+  state.commonCostStates.sort((a,b)=>a.effectiveFrom.localeCompare(b.effectiveFrom));
+  return true;
+}
+function autoCommonCostByMonth(){
+  const states=[...state.commonCostStates].sort((a,b)=>a.effectiveFrom.localeCompare(b.effectiveFrom));
+  return Array.from({length:12},(_,i)=>{
+    const monthStart=YEAR+"-"+String(i+1).padStart(2,"0")+"-01";
+    const active=states.filter(x=>x.effectiveFrom<=monthStart);
+    return active.length?active[active.length-1]:null;
+  });
+}
+function renderAutoCommonCostState(){
+  if(!window.commonCostStateTable)return;
+  const months=["Jan","Feb","Már","Ápr","Máj","Jún","Júl","Aug","Szept","Okt","Nov","Dec"];
+  commonCostStateTable.innerHTML=autoCommonCostByMonth().map((x,i)=>{
+    if(!x)return '<tr><td>'+months[i]+'</td><td>–</td><td>–</td><td>nincs ismert adat</td></tr>';
+    const exact=x.effectiveFrom.startsWith(YEAR+"-"+String(i+1).padStart(2,"0"));
+    return '<tr><td>'+months[i]+'</td><td>'+money(x.monthlyAmount)+'</td><td>'+x.sourceName+'</td><td>'+(exact?"forrásból ismert":"utolsó ismert összeg továbbvive")+'</td></tr>';
+  }).join("");
+}
 function renderAutoCandidates(){
   if(!window.candidatePanel||!window.candidateTable)return;
   candidatePanel.hidden=!state.candidates.length;
   candidateTable.innerHTML=state.candidates.map(x=>{
     const done=x.status!=="PENDING",opts=[["income","Adóköteles bevétel"],["expense","Elszámolható költség"],["pass","Nem adóköteles átterhelés"],["review","Ellenőrzést igényel"]].map(([v,l])=>'<option value="'+v+'"'+(x.treatment===v?" selected":"")+'>'+l+'</option>').join("");
-    return '<tr data-id="'+x.id.replace(/"/g,"&quot;")+'"><td><b>'+x.label+'</b><br><span class="small">'+x.file+' · '+x.family+' · '+x.mode+'</span></td><td>'+money(x.amount)+'</td><td><input class="auto-date" type="date" value="'+(x.taxDate||"")+'" '+(done?"disabled":"")+'></td><td><select class="auto-treatment" '+(done?"disabled":"")+'>'+opts+'</select></td><td><button class="primary auto-approve" '+(done?"disabled":"")+'>'+(x.mode==="TEST_SAMPLE"?"Teszt rendben":"Jóváhagyás")+'</button><br><span class="small">'+x.status+'</span></td></tr>';
+    const buttonLabel=x.mode==="TEST_SAMPLE"?"Teszt rendben":(x.family==="COMMON_COST_STATEMENT"?"Állapot jóváhagyása":"Jóváhagyás");
+    return '<tr data-id="'+x.id.replace(/"/g,"&quot;")+'"><td><b>'+x.label+'</b><br><span class="small">'+x.file+' · '+x.family+' · '+x.mode+'</span></td><td>'+money(x.amount)+'</td><td><input class="auto-date" type="date" value="'+(x.taxDate||"")+'" '+(done?"disabled":"")+'></td><td><select class="auto-treatment" '+(done?"disabled":"")+'>'+opts+'</select></td><td><button class="primary auto-approve" '+(done?"disabled":"")+'>'+buttonLabel+'</button><br><span class="small">'+x.status+'</span></td></tr>';
   }).join("");
   candidateTable.querySelectorAll(".auto-approve").forEach(b=>b.onclick=()=>{
     const tr=b.closest("tr"),x=state.candidates.find(c=>c.id===tr.dataset.id);if(!x)return;
     x.taxDate=tr.querySelector(".auto-date").value;x.treatment=tr.querySelector(".auto-treatment").value;
     if(x.mode==="TEST_SAMPLE"){x.status="TEST_ACCEPTED";state.autoAccepted.push(x.id);save();renderAutoCandidates();return}
+    if(x.family==="COMMON_COST_STATEMENT"){
+      const next={effectiveFrom:x.start,monthlyAmount:x.amount,sourceName:x.file,sourceId:x.id};
+      if(!next.effectiveFrom||!next.effectiveFrom.startsWith("2026-")){alert("A közös költség kezdő hónapja nem állapítható meg.");return}
+      if(!addAutoCommonCostState(next))return;
+      x.status="APPROVED_STATE";state.autoAccepted.push(x.id);save();renderAutoCandidates();renderAutoCommonCostState();return
+    }
     if(x.treatment==="review"){alert("Előbb válassz jóváhagyott kezelést.");return}
     if(!x.taxDate.startsWith("2026-")||!x.start.startsWith("2026-")||!x.end.startsWith("2026-")){alert("LIVE_2026 tételnél minden dátumnak 2026-osnak kell lennie.");return}
     const doc={documentId:"AUTO-"+btoa(unescape(encodeURIComponent(x.id))).replace(/=/g,"").slice(-18),file:x.file,amount:x.amount,taxDate:x.taxDate,serviceStart:x.start,serviceEnd:x.end,treatment:x.treatment};
@@ -121,3 +157,5 @@ if(window.autoDocumentForm){
   };
 }
 renderAutoCandidates();
+
+renderAutoCommonCostState();
