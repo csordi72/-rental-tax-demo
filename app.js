@@ -40,13 +40,50 @@ function autoPeriod(text){
   const y=Number(m[1]),sm=AUTO_MONTHS[m[2].toLowerCase()],em=AUTO_MONTHS[m[3].toLowerCase()];
   return [y+"-"+String(sm).padStart(2,"0")+"-01",y+"-"+String(em).padStart(2,"0")+"-"+String(new Date(y,em,0).getDate()).padStart(2,"0")];
 }
-async function autoExtractPdfText(file){
-  if(!window.pdfjsLib)throw new Error("PDF feldolgozó nem érhető el");
+function autoReadFileAsArrayBuffer(file){
+  return new Promise((resolve,reject)=>{
+    if(!file){reject(new Error("FILE_MISSING: nincs kiválasztott fájl"));return}
+    const readerFallback=()=>{
+      const reader=new FileReader();
+      reader.onload=()=>reader.result instanceof ArrayBuffer?resolve(reader.result):reject(new Error("FILE_READ_INVALID_RESULT"));
+      reader.onerror=()=>reject(new Error("FILE_READ_FAILED: "+(reader.error?.message||"ismeretlen FileReader hiba")));
+      reader.onabort=()=>reject(new Error("FILE_READ_ABORTED"));
+      try{reader.readAsArrayBuffer(file)}catch(err){reject(new Error("FILE_READ_FAILED: "+(err?.message||"FileReader indítási hiba")))}
+    };
+    if(typeof file.arrayBuffer==="function"){
+      file.arrayBuffer().then(buffer=>{
+        if(!(buffer instanceof ArrayBuffer)||buffer.byteLength===0){readerFallback();return}
+        resolve(buffer);
+      }).catch(()=>readerFallback());
+      return;
+    }
+    readerFallback();
+  });
+}
+function autoValidatePdfBytes(buffer){
+  if(!(buffer instanceof ArrayBuffer)||buffer.byteLength<5)throw new Error("PDF_BYTES_INVALID");
+  const head=new Uint8Array(buffer,0,Math.min(buffer.byteLength,8));
+  const sig=String.fromCharCode(...head);
+  if(!sig.startsWith("%PDF-"))throw new Error("PDF_SIGNATURE_INVALID");
+}
+async function autoOpenPdf(data){
+  if(!window.pdfjsLib)throw new Error("PDFJS_MISSING");
   window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-  const pdf=await window.pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  try{return await window.pdfjsLib.getDocument({data}).promise}
+  catch(err){
+    try{return await window.pdfjsLib.getDocument({data,disableWorker:true}).promise}
+    catch(fallbackErr){throw new Error("PDFJS_OPEN_FAILED: "+(fallbackErr?.message||err?.message||"a PDF nem nyitható meg"))}
+  }
+}
+async function autoExtractPdfText(file){
+  const buffer=await autoReadFileAsArrayBuffer(file);
+  autoValidatePdfBytes(buffer);
+  const pdf=await autoOpenPdf(new Uint8Array(buffer.slice(0)));
   let text="";
   for(let i=1;i<=pdf.numPages;i++){
-    const page=await pdf.getPage(i),tc=await page.getTextContent();
+    let page;
+    try{page=await pdf.getPage(i)}catch(err){throw new Error("PDF_PAGE_FAILED: "+i+". oldal")}
+    const tc=await page.getTextContent();
     tc.items.forEach(x=>text+=x.str+(x.hasEOL?"\n":" "));
     text+="\n";
   }
