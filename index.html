@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>2026 Lakásbérbeadás SZJA</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Pebble · 2026 lakásbérbeadás</p>
+        <h1>SZJA nyilvántartó és negyedéves kalkulátor</h1>
+        <p class="lede">Egy lakás · magánszemély bérlő · tételes költségelszámolás</p>
+      </div>
+      <div class="status-card">
+        <span class="status-dot"></span>
+        <span id="master-status">Törzsadatok ellenőrzése…</span>
+      </div>
+    </header>
+
+    <section id="question-panel" class="panel accent-panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Csak ami tényleg hiányzik</p>
+          <h2>Következő szükséges adat</h2>
+        </div>
+        <span class="badge">state-aware</span>
+      </div>
+      <div id="question-content"></div>
+    </section>
+
+    <nav class="tabs" aria-label="Fő nézetek">
+      <button class="tab active" data-tab="overview">Áttekintés</button>
+      <button class="tab" data-tab="master">Törzsadatok</button>
+      <button class="tab" data-tab="documents">Dokumentumok</button>
+      <button class="tab" data-tab="payments">SZJA befizetések</button>
+    </nav>
+
+    <section id="overview" class="tab-view active">
+      <div class="metrics">
+        <article class="metric"><span>2026 bevétel</span><strong id="annual-income">–</strong></article>
+        <article class="metric"><span>Elszámolt költség</span><strong id="annual-expense">–</strong></article>
+        <article class="metric"><span>ÉCS</span><strong id="annual-dep">–</strong></article>
+        <article class="metric"><span>Számított SZJA</span><strong id="annual-tax">–</strong></article>
+        <article class="metric"><span>Befizetett SZJA</span><strong id="annual-paid">–</strong></article>
+        <article class="metric"><span>Eltérés</span><strong id="annual-delta">–</strong></article>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Negyedéves SZJA</h2><span class="muted">adózási dátum alapján</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Negyedév</th><th>Bevétel</th><th>Költség</th><th>ÉCS</th><th>Jövedelem</th><th>15% SZJA</th><th>Befizetve</th><th>Eltérés</th><th>Határidő</th></tr>
+            </thead>
+            <tbody id="quarter-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Havi gazdasági kép</h2><p class="muted">szolgáltatási időszak szerint felosztva</p></div>
+          <span class="badge soft">analitika ≠ adózási időpont</span>
+        </div>
+        <div id="monthly-bars" class="bars"></div>
+      </section>
+    </section>
+
+    <section id="master" class="tab-view">
+      <section class="panel">
+        <div class="panel-head"><h2>Fix törzsadatok</h2><span class="muted">egyszer kérjük be, utána megőrizzük</span></div>
+        <form id="master-form" class="form-grid">
+          <label>Szerzés dátuma<input type="date" name="acquisitionDate"></label>
+          <label>Vételár (Ft)<input type="number" min="0" step="1" name="acquisitionValue"></label>
+          <label>ÉCS-alap (Ft)<input type="number" min="0" step="1" name="depreciationBasis"></label>
+          <label>ÉCS-kulcs (%)<input type="number" min="0.01" max="100" step="0.01" name="depreciationRate"></label>
+          <label>Bérbeadás kezdete<input type="date" name="rentalStart"></label>
+          <label>Bérbeadás vége<input type="date" name="rentalEnd"></label>
+          <label class="checkbox"><input type="checkbox" name="wholeApartment"> Teljes lakás bérbeadva</label>
+          <label id="share-wrap">Bérbeadott hányad (%)<input type="number" min="0.01" max="100" step="0.01" name="rentedShare"></label>
+          <button type="submit" class="primary">Törzsadatok mentése</button>
+        </form>
+        <p class="footnote">Az ÉCS-kulcsot az alkalmazás nem találja ki. Ha nincs hitelesen megadva, külön bekéri.</p>
+      </section>
+    </section>
+
+    <section id="documents" class="tab-view">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Dokumentum hozzáadása</h2><p class="muted">számla, közös költség dokumentum, bérleti bizonylat</p></div>
+          <span class="badge soft">OCR adapter-ready</span>
+        </div>
+        <form id="document-form" class="form-grid">
+          <label class="wide">Forrásfájl<input type="file" name="file" accept=".pdf,image/*"></label>
+          <label>Dokumentum azonosító<input type="text" name="documentId" required placeholder="pl. 2026-001"></label>
+          <label>Összeg (Ft)<input type="number" min="0" step="1" name="amount" required></label>
+          <label>Adózási dátum<input type="date" name="taxDate" required></label>
+          <label>Időszak kezdete<input type="date" name="serviceStart" required></label>
+          <label>Időszak vége<input type="date" name="serviceEnd" required></label>
+          <label>Típus
+            <select name="kind" required>
+              <option value="RENT_INCOME">Bérleti díj bevétel</option>
+              <option value="COMMON_COST_REIMBURSEMENT">Közös költség megtérítés</option>
+              <option value="UTILITY_PASS_THROUGH">Közüzemi továbbszámlázás</option>
+              <option value="OTHER_INCOME">Egyéb bevétel</option>
+              <option value="COMMON_COST_EXPENSE">Közös költség</option>
+              <option value="UTILITY_EXPENSE">Közüzemi költség</option>
+              <option value="REPAIR_MAINTENANCE">Javítás / karbantartás</option>
+              <option value="OTHER_EXPENSE">Egyéb költség</option>
+            </select>
+          </label>
+          <label>Adózási kezelés
+            <select name="treatment" required>
+              <option value="TAXABLE_INCOME">Adóköteles bevétel</option>
+              <option value="NON_TAXABLE_PASS_THROUGH">Nem adóköteles pontos közüzemi átterhelés</option>
+              <option value="DEDUCTIBLE_EXPENSE">Elszámolható költség</option>
+              <option value="NON_DEDUCTIBLE">Nem elszámolható</option>
+              <option value="REVIEW_REQUIRED">Ellenőrzést igényel</option>
+            </select>
+          </label>
+          <label>Kapcsolódó bizonylat<input type="text" name="relatedDocumentId" placeholder="opcionális"></label>
+          <label class="wide">Megjegyzés<textarea name="note" rows="2"></textarea></label>
+          <button type="submit" class="primary">Dokumentum rögzítése</button>
+        </form>
+        <p class="footnote">A fájl tartalmát ez az MVP még nem OCR-ezi; a fájlnév és a rögzített strukturált adatok kerülnek a helyi nyilvántartásba.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>2026 dokumentumok</h2><button id="clear-docs" class="ghost">Dokumentumok törlése</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Azonosító</th><th>Forrás</th><th>Típus</th><th>Összeg</th><th>Adózási dátum</th><th>Időszak</th><th>Kezelés</th></tr></thead>
+            <tbody id="documents-table"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="payments" class="tab-view">
+      <section class="panel">
+        <div class="panel-head"><h2>Tényleges SZJA befizetés</h2><span class="muted">külön a számított kötelezettségtől</span></div>
+        <form id="payment-form" class="form-grid">
+          <label>Befizetés azonosító<input type="text" name="paymentId" required></label>
+          <label>Befizetés dátuma<input type="date" name="paidAt" required></label>
+          <label>Összeg (Ft)<input type="number" min="0" step="1" name="amount" required></label>
+          <button type="submit" class="primary">Befizetés rögzítése</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Rögzített befizetések</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Azonosító</th><th>Dátum</th><th>Összeg</th></tr></thead>
+            <tbody id="payments-table"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <footer>
+      <p>2026-os számítási segédlet. Nem NAV-bevalló rendszer és nem helyettesít személyre szabott adótanácsadást.</p>
+    </footer>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>
