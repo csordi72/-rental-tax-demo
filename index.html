@@ -62,6 +62,20 @@
   </section>
 
   <section id="docs" class="view">
+    <section class="panel accent">
+      <p class="eyebrow">Dokumentum-first intake</p>
+      <h2>PDF-ek automatikus feldolgozása</h2>
+      <form id="autoDocumentForm" class="grid">
+        <label class="wide">PDF dokumentumok<input type="file" name="files" accept=".pdf,application/pdf" multiple required></label>
+        <label>Feldolgozási mód<select name="mode"><option value="LIVE_2026">LIVE_2026</option><option value="TEST_SAMPLE">TEST_SAMPLE</option></select></label>
+        <button class="primary">Feldolgozás</button>
+      </form>
+      <p id="autoStatus" class="small">A PDF helyben kerül feldolgozásra; nem töltjük fel szerverre.</p>
+    </section>
+    <section class="panel" id="candidatePanel" hidden>
+      <h2>Felismerési javaslatok</h2>
+      <div class="table-wrap"><table><thead><tr><th>Tétel</th><th>Összeg</th><th>Dátum</th><th>Kezelés</th><th></th></tr></thead><tbody id="candidateTable"></tbody></table></div>
+    </section>
     <section class="panel">
       <h2>Dokumentum rögzítése</h2>
       <form id="docForm" class="grid">
@@ -108,6 +122,7 @@
 
   <footer>2026-os tesztalkalmazás. Nem NAV-bevalló rendszer és nem helyettesít személyre szabott adótanácsadást.</footer>
 </main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
