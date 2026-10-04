@@ -58,10 +58,8 @@ function autoFamily(text){
   return"UNKNOWN";
 }
 function autoLineAmount(text,label){
-  const m=text.match(new RegExp(label+"[^\\n]*?([0-9][0-9 ]{1,})\\s+AAM","i"));
-  if(!m)return 0;
-  const nums=(m[0].match(/[0-9][0-9 ]*/g)||[]).map(autoNum).filter(Boolean);
-  return nums.length?nums[nums.length-1]:0;
+  const m=text.match(new RegExp(label+"[^\\n]*?AAM\\s+0\\s+([0-9][0-9 ]*)","i"));
+  return m?autoNum(m[1]):0;
 }
 function autoCandidate(file,mode,suffix,label,amount,taxDate,start,end,treatment,family){
   return {id:[file.name,file.size,file.lastModified,suffix].join(":"),file:file.name,mode,label,amount,taxDate,start,end,treatment,family,status:"PENDING"};
