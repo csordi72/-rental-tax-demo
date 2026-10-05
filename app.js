@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v9";
-const APP_BUILD_VERSION = "2026.10.05.9";
+const PARSER_VERSION = "parser-v10";
+const APP_BUILD_VERSION = "2026.10.05.10";
 
 const emptyState = () => ({
   master: {
@@ -347,11 +347,25 @@ function makeCandidate(file, mode, suffix, fields) {
     note: fields.note || ""
   };
 }
+function semanticCandidateKey(candidate) {
+  return [
+    stableSourceSignature(candidate),
+    candidate.documentFamily || "",
+    candidate.documentId || candidate.label || "",
+    Number(candidate.amount || 0),
+    candidate.serviceStart || "",
+    candidate.serviceEnd || ""
+  ].join("|");
+}
 function candidateGroups(candidates) {
   const groups = [];
   const byKey = new Map();
+  const seen = new Set();
   candidates.forEach(candidate => {
-    const key = candidate.sourceKey || candidate.sourceName;
+    const semanticKey = semanticCandidateKey(candidate);
+    if (seen.has(semanticKey)) return;
+    seen.add(semanticKey);
+    const key = stableSourceSignature(candidate) || candidate.sourceKey || candidate.sourceName;
     if (!byKey.has(key)) {
       const group = {key, sourceName:candidate.sourceName, candidates:[]};
       byKey.set(key, group);
@@ -377,12 +391,16 @@ function stableSourceSignature(candidate) {
 function appendCandidateReplay(existing, incoming, approvedIds, testIds) {
   const protectedIds = new Set([...(approvedIds || []), ...(testIds || [])]);
   const next = [...existing];
+  const semanticKeys = new Set(next.map(semanticCandidateKey));
   let added = 0;
   incoming.forEach(candidate => {
+    const semanticKey = semanticCandidateKey(candidate);
     const known = next.some(item => item.candidateId === candidate.candidateId) ||
-      protectedIds.has(candidate.candidateId);
+      protectedIds.has(candidate.candidateId) ||
+      semanticKeys.has(semanticKey);
     if (!known) {
       next.push(candidate);
+      semanticKeys.add(semanticKey);
       added += 1;
     }
   });
@@ -597,11 +615,22 @@ function parseUtilityBundle(text, file, mode) {
   const out = [];
   ids.forEach((id, i) => {
     const segment = bestInvoiceSegment(text, id) || text;
-    const amountMatch = segment.match(/Fizetendő\s+összeg:\s*([0-9 ]+)\s*Ft/i);
+    const amountMatch = segment.match(/Fizetendő\s+összeg:?\s*([0-9 ]+)\s*Ft/i);
     const periodMatch = segment.match(/Elszámolási\s+időszak:\s*(\d{4}\.\d{2}\.\d{2})\.?\s*[-–]\s*(\d{4}\.\d{2}\.\d{2})\.?/i);
     const completionMatch = segment.match(/Teljesítés\s+időpontja:\s*([0-9.\-]+)/i);
     const dueMatch = segment.match(/Fizetési\s+határidő:\s*([0-9.\-]+)/i);
-    const amount = amountMatch ? compactHuf(amountMatch[1]) : 0;
+    let amount = amountMatch ? compactHuf(amountMatch[1]) : 0;
+    if (!amount) {
+      const refs = extractUtilityInvoiceRefs(text).filter(ref => ref.id === id);
+      for (const ref of refs) {
+        const nearby = text.slice(ref.end, Math.min(text.length, ref.end + 80));
+        const summaryAmount = nearby.match(/(?:^|\s)([0-9]{1,3}(?: [0-9]{3})+)\s*(?:Ft)?\b/);
+        if (summaryAmount) {
+          amount = compactHuf(summaryAmount[1]);
+          if (amount) break;
+        }
+      }
+    }
     if (!amount || !periodMatch) return;
     const isWater = id.startsWith("FVV/");
     out.push(makeCandidate(file, mode, "utility-" + i + "-" + id.replace("/","-"), {
