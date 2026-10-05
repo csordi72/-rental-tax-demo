@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v5";
-const APP_BUILD_VERSION = "2026.10.05.4";
+const PARSER_VERSION = "parser-v6";
+const APP_BUILD_VERSION = "2026.10.05.5";
 
 const emptyState = () => ({
   master: {
@@ -364,14 +364,16 @@ function familyLabel(value) {
     UNKNOWN:"Nem felismert dokumentum"
   })[value] || value;
 }
-function pruneStaleUnknownCandidates(existing, incoming, approvedIds, testIds) {
-  const recognizedSources = new Set(
-    incoming.filter(candidate => candidate.documentFamily !== "UNKNOWN").map(candidate => candidate.sourceKey)
-  );
+function stableSourceSignature(candidate) {
+  const match = String(candidate.sourceKey || "").match(/^(.*):(\d+):(\d+)$/);
+  if (match) return (candidate.sourceName || match[1]) + ":" + match[2];
+  return candidate.sourceName || "";
+}
+function replacePendingCandidatesForSource(existing, incoming, approvedIds, testIds) {
+  const incomingSignatures = new Set(incoming.map(stableSourceSignature).filter(Boolean));
   const protectedIds = new Set([...(approvedIds || []), ...(testIds || [])]);
   return existing.filter(candidate => !(
-    recognizedSources.has(candidate.sourceKey) &&
-    candidate.documentFamily === "UNKNOWN" &&
+    incomingSignatures.has(stableSourceSignature(candidate)) &&
     !protectedIds.has(candidate.candidateId)
   ));
 }
@@ -474,12 +476,49 @@ function extractUtilityInvoiceRefs(text) {
 function uniqueUtilityIds(text) {
   return [...new Set(extractUtilityInvoiceRefs(text).map(ref => ref.id))];
 }
+function extractUtilityLeafRecords(text) {
+  const records = [];
+  const periodRe = /Elszámolási\s+időszak:\s*(\d{4}\.\d{2}\.\d{2})\.?\s*[-–]\s*(\d{4}\.\d{2}\.\d{2})\.?/gi;
+  let periodMatch;
+  while ((periodMatch = periodRe.exec(text)) !== null) {
+    const start = periodMatch.index;
+    const end = Math.min(text.length, start + 1800);
+    const segment = text.slice(start, end);
+    const amountMatch = segment.match(/Fizetendő\s+összeg:?\s*([0-9 ]+)\s*Ft/i);
+    if (!amountMatch) continue;
+    const dueMatch = segment.match(/Fizetési\s+határidő:\s*([0-9.\-]+)/i);
+    const completionMatch = segment.match(/Teljesítés\s+időpontja:\s*([0-9.\-]+)/i);
+    const amount = compactHuf(amountMatch[1]);
+    if (!amount) continue;
+    const before = text.slice(Math.max(0, start - 1400), start);
+    const after = text.slice(start, Math.min(text.length, start + 2600));
+    const context = before + after;
+    const isSewer = /Csatornázási|szennyvíz/i.test(context);
+    const isWater = /Vízművek|ivóvíz/i.test(context) && !isSewer;
+    records.push({
+      amount,
+      serviceStart: isoFromHuDate(periodMatch[1]),
+      serviceEnd: isoFromHuDate(periodMatch[2]),
+      dueDate: dueMatch ? isoFromHuDate(dueMatch[1]) : "",
+      observedDate: completionMatch ? isoFromHuDate(completionMatch[1]) : "",
+      kindLabel: isSewer ? "Szennyvízelvezetés" : (isWater ? "Víziközmű-szolgáltatás" : "Közüzemi számla")
+    });
+  }
+  const seen = new Set();
+  return records.filter(record => {
+    const key = [record.amount, record.serviceStart, record.serviceEnd, record.dueDate].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 function detectDocumentFamily(text) {
   if (/Lakásbérleti díj/i.test(text) && /SZÁMLA/i.test(text)) return "RENTAL_INVOICE";
   const utilityIds = uniqueUtilityIds(text);
-  const utilityLeafCue = /Fizetendő\s+összeg:?\s*[0-9 ]+\s*Ft/i.test(text) &&
-    /Elszámolási\s+időszak:/i.test(text);
-  if (utilityIds.length >= 2 || (utilityIds.length >= 1 && utilityLeafCue)) return "UTILITY_BUNDLE";
+  const utilityLeaves = extractUtilityLeafRecords(text);
+  if (utilityIds.length >= 2 || utilityLeaves.length >= 2 || (utilityIds.length >= 1 && utilityLeaves.length >= 1)) {
+    return "UTILITY_BUNDLE";
+  }
   if (/Teljes elszámolás/i.test(text) && /Közösköltség/i.test(text) && /Felúj\.\s*alap/i.test(text)) return "COMMON_COST_STATEMENT";
   return "UNKNOWN";
 }
@@ -552,7 +591,7 @@ function parseUtilityBundle(text, file, mode) {
     const completionMatch = segment.match(/Teljesítés\s+időpontja:\s*([0-9.\-]+)/i);
     const dueMatch = segment.match(/Fizetési\s+határidő:\s*([0-9.\-]+)/i);
     const amount = amountMatch ? compactHuf(amountMatch[1]) : 0;
-    if (!amount) return;
+    if (!amount || !periodMatch) return;
     const isWater = id.startsWith("FVV/");
     out.push(makeCandidate(file, mode, "utility-" + i + "-" + id.replace("/","-"), {
       documentFamily:"UTILITY_BUNDLE", documentId:id, label:isWater ? "Víziközmű-szolgáltatás" : "Szennyvízelvezetés",
@@ -560,15 +599,31 @@ function parseUtilityBundle(text, file, mode) {
       observedDate: completionMatch ? isoFromHuDate(completionMatch[1]) : "",
       dueDate: dueMatch ? isoFromHuDate(dueMatch[1]) : "",
       taxDate:"",
-      serviceStart: periodMatch ? isoFromHuDate(periodMatch[1]) : "",
-      serviceEnd: periodMatch ? isoFromHuDate(periodMatch[2]) : "",
+      serviceStart: isoFromHuDate(periodMatch[1]),
+      serviceEnd: isoFromHuDate(periodMatch[2]),
       kind:"UTILITY_EXPENSE",
       treatment:"REVIEW_REQUIRED",
       confidence:"HIGH",
       note:"A terhelési összesítő kontrollösszeg; nem külön ledger-tétel. A teljesítési időpont csak forrásdátum; a pénzmozgási/adózási dátumot külön add meg."
     }));
   });
-  return out;
+  if (out.length >= 2) return out;
+
+  return extractUtilityLeafRecords(text).map((record, i) => makeCandidate(file, mode, "utility-leaf-" + i, {
+    documentFamily:"UTILITY_BUNDLE",
+    documentId:"UTILITY-LEAF-" + (i + 1),
+    label:record.kindLabel,
+    amount:record.amount,
+    observedDate:record.observedDate,
+    dueDate:record.dueDate,
+    taxDate:"",
+    serviceStart:record.serviceStart,
+    serviceEnd:record.serviceEnd,
+    kind:"UTILITY_EXPENSE",
+    treatment:"REVIEW_REQUIRED",
+    confidence:"MEDIUM",
+    note:"A számlatételt a számla mezőiből ismertük fel. Számlaazonosító nem volt megbízhatóan kinyerhető, ezért jóváhagyás előtt ellenőrizd."
+  }));
 }
 function parseCommonCostStatement(text, file, mode) {
   const out = [];
@@ -853,7 +908,7 @@ if (autoDocumentForm) {
           continue;
         }
         const candidates = parseCandidates(text, file, mode);
-        state.candidates = pruneStaleUnknownCandidates(
+        state.candidates = replacePendingCandidatesForSource(
           state.candidates,
           candidates,
           state.approvedCandidateIds,
