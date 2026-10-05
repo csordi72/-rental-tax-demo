@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v6";
-const APP_BUILD_VERSION = "2026.10.05.6";
+const PARSER_VERSION = "parser-v7";
+const APP_BUILD_VERSION = "2026.10.05.7";
 
 const emptyState = () => ({
   master: {
@@ -78,12 +78,38 @@ function normalizeState(value) {
   };
 }
 
+function candidateParserVersion(candidateId) {
+  const match = String(candidateId || "").match(/:(parser-v\d+):/);
+  return match ? match[1] : "";
+}
+function pruneStaleParserCandidates(value) {
+  const protectedIds = new Set([
+    ...(value.approvedCandidateIds || []),
+    ...(value.testSampleIds || [])
+  ]);
+  return {
+    ...value,
+    candidates: (value.candidates || []).filter(candidate => {
+      if (protectedIds.has(candidate.candidateId)) return true;
+      if (["APPROVED", "APPROVED_STATE", "TEST_ACCEPTED"].includes(candidate.status)) return true;
+      const version = candidateParserVersion(candidate.candidateId);
+      return !version || version === PARSER_VERSION;
+    })
+  };
+}
+
 let state = loadState();
 
 function loadState() {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? normalizeState(JSON.parse(raw)) : emptyState();
+    if (!raw) return emptyState();
+    const normalized = normalizeState(JSON.parse(raw));
+    const pruned = pruneStaleParserCandidates(normalized);
+    if (pruned.candidates.length !== normalized.candidates.length) {
+      localStorage.setItem(KEY, JSON.stringify(pruned));
+    }
+    return pruned;
   } catch {
     return emptyState();
   }
