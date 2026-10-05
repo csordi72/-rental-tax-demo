@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v4";
-const APP_BUILD_VERSION = "2026.10.05.3";
+const PARSER_VERSION = "parser-v5";
+const APP_BUILD_VERSION = "2026.10.05.4";
 
 const emptyState = () => ({
   master: {
@@ -364,6 +364,17 @@ function familyLabel(value) {
     UNKNOWN:"Nem felismert dokumentum"
   })[value] || value;
 }
+function pruneStaleUnknownCandidates(existing, incoming, approvedIds, testIds) {
+  const recognizedSources = new Set(
+    incoming.filter(candidate => candidate.documentFamily !== "UNKNOWN").map(candidate => candidate.sourceKey)
+  );
+  const protectedIds = new Set([...(approvedIds || []), ...(testIds || [])]);
+  return existing.filter(candidate => !(
+    recognizedSources.has(candidate.sourceKey) &&
+    candidate.documentFamily === "UNKNOWN" &&
+    !protectedIds.has(candidate.candidateId)
+  ));
+}
 function readFileAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
     if (!file) {
@@ -448,11 +459,26 @@ async function extractPdfText(file) {
   }
   return text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
 }
+function extractUtilityInvoiceRefs(text) {
+  const refs = [];
+  const re = /(F\s*V\s*V|F\s*C\s*S)\s*\/\s*((?:\d\s*){4,})/gi;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const prefix = match[1].replace(/\s/g, "").toUpperCase();
+    const digits = match[2].replace(/\D/g, "");
+    if (!digits) continue;
+    refs.push({ id: prefix + "/" + digits, start: match.index, end: re.lastIndex });
+  }
+  return refs;
+}
+function uniqueUtilityIds(text) {
+  return [...new Set(extractUtilityInvoiceRefs(text).map(ref => ref.id))];
+}
 function detectDocumentFamily(text) {
   if (/Lakásbérleti díj/i.test(text) && /SZÁMLA/i.test(text)) return "RENTAL_INVOICE";
-  const utilityIds = [...new Set(text.match(/(?:FVV|FCS)\/\d+/g) || [])];
-  const utilityLeafCue = /Fizetendő összeg:?\s*[0-9 ]+\s*Ft/i.test(text) &&
-    /Elszámolási időszak:/i.test(text);
+  const utilityIds = uniqueUtilityIds(text);
+  const utilityLeafCue = /Fizetendő\s+összeg:?\s*[0-9 ]+\s*Ft/i.test(text) &&
+    /Elszámolási\s+időszak:/i.test(text);
   if (utilityIds.length >= 2 || (utilityIds.length >= 1 && utilityLeafCue)) return "UTILITY_BUNDLE";
   if (/Teljes elszámolás/i.test(text) && /Közösköltség/i.test(text) && /Felúj\.\s*alap/i.test(text)) return "COMMON_COST_STATEMENT";
   return "UNKNOWN";
@@ -494,26 +520,21 @@ function parseRentalInvoice(text, file, mode) {
   return out;
 }
 function bestInvoiceSegment(text, id) {
-  const starts = [];
-  let cursor = text.indexOf(id);
-  while (cursor >= 0) {
-    starts.push(cursor);
-    cursor = text.indexOf(id, cursor + id.length);
-  }
+  const refs = extractUtilityInvoiceRefs(text);
+  const occurrences = refs.filter(ref => ref.id === id);
   let best = "";
   let bestScore = -1;
-  starts.forEach(start => {
-    const nextIds = [...new Set(text.match(/(?:FVV|FCS)\/\d+/g) || [])]
-      .filter(other => other !== id)
-      .map(other => text.indexOf(other, start + id.length))
-      .filter(value => value > start);
-    const end = nextIds.length ? Math.min(...nextIds) : Math.min(text.length, start + 12000);
-    const segment = text.slice(start, end);
+  occurrences.forEach(ref => {
+    const nextOther = refs
+      .filter(other => other.start > ref.start && other.id !== id)
+      .map(other => other.start);
+    const end = nextOther.length ? Math.min(...nextOther) : Math.min(text.length, ref.start + 12000);
+    const segment = text.slice(ref.start, end);
     let score = 0;
-    if (/Fizetendő összeg:?\s*[0-9 ]+\s*Ft/i.test(segment)) score += 4;
-    if (/Elszámolási időszak:/i.test(segment)) score += 4;
-    if (/Fizetési határidő:/i.test(segment)) score += 2;
-    if (/Teljesítés időpontja:/i.test(segment)) score += 1;
+    if (/Fizetendő\s+összeg:?\s*[0-9 ]+\s*Ft/i.test(segment)) score += 4;
+    if (/Elszámolási\s+időszak:/i.test(segment)) score += 4;
+    if (/Fizetési\s+határidő:/i.test(segment)) score += 2;
+    if (/Teljesítés\s+időpontja:/i.test(segment)) score += 1;
     if (score > bestScore) {
       bestScore = score;
       best = segment;
@@ -522,14 +543,14 @@ function bestInvoiceSegment(text, id) {
   return best;
 }
 function parseUtilityBundle(text, file, mode) {
-  const ids = [...new Set((text.match(/(?:FVV|FCS)\/\d+/g) || []))];
+  const ids = uniqueUtilityIds(text);
   const out = [];
   ids.forEach((id, i) => {
     const segment = bestInvoiceSegment(text, id) || text;
-    const amountMatch = segment.match(/Fizetendő összeg:\s*([0-9 ]+)\s*Ft/i);
-    const periodMatch = segment.match(/Elszámolási időszak:\s*(\d{4}\.\d{2}\.\d{2})\.?\s*[-–]\s*(\d{4}\.\d{2}\.\d{2})\.?/i);
-    const completionMatch = segment.match(/Teljesítés időpontja:\s*([0-9.\-]+)/i);
-    const dueMatch = segment.match(/Fizetési határidő:\s*([0-9.\-]+)/i);
+    const amountMatch = segment.match(/Fizetendő\s+összeg:\s*([0-9 ]+)\s*Ft/i);
+    const periodMatch = segment.match(/Elszámolási\s+időszak:\s*(\d{4}\.\d{2}\.\d{2})\.?\s*[-–]\s*(\d{4}\.\d{2}\.\d{2})\.?/i);
+    const completionMatch = segment.match(/Teljesítés\s+időpontja:\s*([0-9.\-]+)/i);
+    const dueMatch = segment.match(/Fizetési\s+határidő:\s*([0-9.\-]+)/i);
     const amount = amountMatch ? compactHuf(amountMatch[1]) : 0;
     if (!amount) return;
     const isWater = id.startsWith("FVV/");
@@ -832,6 +853,12 @@ if (autoDocumentForm) {
           continue;
         }
         const candidates = parseCandidates(text, file, mode);
+        state.candidates = pruneStaleUnknownCandidates(
+          state.candidates,
+          candidates,
+          state.approvedCandidateIds,
+          state.testSampleIds
+        );
         candidates.forEach(candidate => {
           const known = state.candidates.some(x => x.candidateId === candidate.candidateId) ||
                         state.approvedCandidateIds.includes(candidate.candidateId) ||
