@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v3";
-const APP_BUILD_VERSION = "2026.10.05.2";
+const PARSER_VERSION = "parser-v4";
+const APP_BUILD_VERSION = "2026.10.05.3";
 
 const emptyState = () => ({
   master: {
@@ -450,7 +450,10 @@ async function extractPdfText(file) {
 }
 function detectDocumentFamily(text) {
   if (/Lakásbérleti díj/i.test(text) && /SZÁMLA/i.test(text)) return "RENTAL_INVOICE";
-  if (/Terhelési összesítő/i.test(text) && /(FVV\/|FCS\/)/i.test(text)) return "UTILITY_BUNDLE";
+  const utilityIds = [...new Set(text.match(/(?:FVV|FCS)\/\d+/g) || [])];
+  const utilityLeafCue = /Fizetendő összeg:?\s*[0-9 ]+\s*Ft/i.test(text) &&
+    /Elszámolási időszak:/i.test(text);
+  if (utilityIds.length >= 2 || (utilityIds.length >= 1 && utilityLeafCue)) return "UTILITY_BUNDLE";
   if (/Teljes elszámolás/i.test(text) && /Közösköltség/i.test(text) && /Felúj\.\s*alap/i.test(text)) return "COMMON_COST_STATEMENT";
   return "UNKNOWN";
 }
@@ -491,23 +494,23 @@ function parseRentalInvoice(text, file, mode) {
   return out;
 }
 function bestInvoiceSegment(text, id) {
-  const marker = "Számla sorszáma: " + id;
   const starts = [];
-  let cursor = text.indexOf(marker);
+  let cursor = text.indexOf(id);
   while (cursor >= 0) {
     starts.push(cursor);
-    cursor = text.indexOf(marker, cursor + marker.length);
+    cursor = text.indexOf(id, cursor + id.length);
   }
   let best = "";
   let bestScore = -1;
   starts.forEach(start => {
-    const nextMarkers = ["Számla sorszáma: FVV/", "Számla sorszáma: FCS/"]
-      .map(value => text.indexOf(value, start + marker.length))
+    const nextIds = [...new Set(text.match(/(?:FVV|FCS)\/\d+/g) || [])]
+      .filter(other => other !== id)
+      .map(other => text.indexOf(other, start + id.length))
       .filter(value => value > start);
-    const end = nextMarkers.length ? Math.min(...nextMarkers) : Math.min(text.length, start + 12000);
+    const end = nextIds.length ? Math.min(...nextIds) : Math.min(text.length, start + 12000);
     const segment = text.slice(start, end);
     let score = 0;
-    if (/Fizetendő összeg:\s*[0-9 ]+\s*Ft/i.test(segment)) score += 4;
+    if (/Fizetendő összeg:?\s*[0-9 ]+\s*Ft/i.test(segment)) score += 4;
     if (/Elszámolási időszak:/i.test(segment)) score += 4;
     if (/Fizetési határidő:/i.test(segment)) score += 2;
     if (/Teljesítés időpontja:/i.test(segment)) score += 1;
