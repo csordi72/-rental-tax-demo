@@ -3,7 +3,7 @@ const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
 const PARSER_VERSION = "parser-v6";
-const APP_BUILD_VERSION = "2026.10.05.5";
+const APP_BUILD_VERSION = "2026.10.05.6";
 
 const emptyState = () => ({
   master: {
@@ -657,6 +657,33 @@ function parseCommonCostStatement(text, file, mode) {
   });
   return out;
 }
+function parserDiagnostics(text) {
+  const compact = String(text || "");
+  const utilityRefs = uniqueUtilityIds(compact).length;
+  const utilityLeaves = extractUtilityLeafRecords(compact).length;
+  const servicePeriods = (compact.match(/Elszámolási\s+időszak:/gi) || []).length;
+  const payableAmounts = (compact.match(/Fizetendő\s+összeg/gi) || []).length;
+  const dueDates = (compact.match(/Fizetési\s+határidő/gi) || []).length;
+  return {
+    textChars: compact.length,
+    utilityRefs,
+    utilityLeaves,
+    servicePeriods,
+    payableAmounts,
+    dueDates
+  };
+}
+function parserDiagnosticNote(text) {
+  const d = parserDiagnostics(text);
+  return "Diagnosztika: " +
+    d.textChars + " karakter; " +
+    d.utilityRefs + " közüzemi azonosító; " +
+    d.utilityLeaves + " számlablokk; " +
+    d.servicePeriods + " elszámolási időszak; " +
+    d.payableAmounts + " fizetendő összeg; " +
+    d.dueDates + " fizetési határidő. " +
+    "Nyers PDF-szöveget és személyes adatot nem tárolunk ebben a diagnosztikában.";
+}
 function parseCandidates(text, file, mode) {
   const family = detectDocumentFamily(text);
   if (family === "RENTAL_INVOICE") return parseRentalInvoice(text, file, mode);
@@ -664,7 +691,7 @@ function parseCandidates(text, file, mode) {
   if (family === "COMMON_COST_STATEMENT") return parseCommonCostStatement(text, file, mode);
   return [makeCandidate(file, mode, "unknown", {
     documentFamily:"UNKNOWN", label:"Ismeretlen dokumentumtípus", treatment:"REVIEW_REQUIRED",
-    confidence:"LOW", note:"A PDF szövege kiolvasható volt, de a dokumentumcsaládot nem ismertük fel."
+    confidence:"LOW", note:"A PDF szövege kiolvasható volt, de a dokumentumcsaládot nem ismertük fel. " + parserDiagnosticNote(text)
   })];
 }
 function treatmentOptions(selected) {
