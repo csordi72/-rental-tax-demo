@@ -62,3 +62,6 @@ footer { color: #737b76; font-size: .75rem; padding: 12px 4px; }
   .metrics { grid-template-columns: 1fr; }
   .shell { width: min(100% - 20px, 1180px); padding-top: 18px; }
 }
+.candidate-group td { background: #f4f6f2; text-align: left !important; padding-top: 14px; padding-bottom: 14px; }
+.candidate-attention td { background: #fff9f1; }
+.candidate-attention .warning { white-space: normal; display: inline-block; margin-top: 4px; }
