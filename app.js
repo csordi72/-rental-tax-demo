@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v8";
-const APP_BUILD_VERSION = "2026.10.05.8";
+const PARSER_VERSION = "parser-v9";
+const APP_BUILD_VERSION = "2026.10.05.9";
 
 const emptyState = () => ({
   master: {
@@ -374,33 +374,19 @@ function stableSourceSignature(candidate) {
   if (match) return (candidate.sourceName || match[1]) + ":" + match[2];
   return candidate.sourceName || "";
 }
-function reconcileCandidateReplay(existing, incoming, approvedIds, testIds) {
-  if (!incoming.length) return { candidates: existing, added: 0, preservedRecognized: false };
-  const signature = stableSourceSignature(incoming[0]);
+function appendCandidateReplay(existing, incoming, approvedIds, testIds) {
   const protectedIds = new Set([...(approvedIds || []), ...(testIds || [])]);
-  const sameSource = existing.filter(candidate => stableSourceSignature(candidate) === signature);
-  const sameSourceUnprotected = sameSource.filter(candidate => !protectedIds.has(candidate.candidateId));
-  const existingRecognized = sameSourceUnprotected.some(candidate => candidate.documentFamily !== "UNKNOWN");
-  const incomingRecognized = incoming.some(candidate => candidate.documentFamily !== "UNKNOWN");
-
-  if (!incomingRecognized && existingRecognized) {
-    return { candidates: existing, added: 0, preservedRecognized: true };
-  }
-
-  const kept = existing.filter(candidate => {
-    if (stableSourceSignature(candidate) !== signature) return true;
-    return protectedIds.has(candidate.candidateId);
-  });
+  const next = [...existing];
   let added = 0;
   incoming.forEach(candidate => {
-    const known = kept.some(item => item.candidateId === candidate.candidateId) ||
+    const known = next.some(item => item.candidateId === candidate.candidateId) ||
       protectedIds.has(candidate.candidateId);
     if (!known) {
-      kept.push(candidate);
+      next.push(candidate);
       added += 1;
     }
   });
-  return { candidates: kept, added, preservedRecognized: false };
+  return { candidates: next, added };
 }
 function readFileAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
@@ -960,17 +946,14 @@ if (autoDocumentForm) {
           continue;
         }
         const candidates = parseCandidates(text, file, mode);
-        const reconciled = reconcileCandidateReplay(
+        const appended = appendCandidateReplay(
           state.candidates,
           candidates,
           state.approvedCandidateIds,
           state.testSampleIds
         );
-        state.candidates = reconciled.candidates;
-        added += reconciled.added;
-        if (reconciled.preservedRecognized) {
-          errors.push(file.name + ": az új feldolgozás nem adott jobb felismerést; a korábbi felismert review-csoportot megtartottuk.");
-        }
+        state.candidates = appended.candidates;
+        added += appended.added;
       } catch (err) {
         errors.push(file.name + ": " + (err.message || "feldolgozási hiba"));
       }
