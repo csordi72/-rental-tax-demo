@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v7";
-const APP_BUILD_VERSION = "2026.10.05.7";
+const PARSER_VERSION = "parser-v8";
+const APP_BUILD_VERSION = "2026.10.05.8";
 
 const emptyState = () => ({
   master: {
@@ -82,34 +82,13 @@ function candidateParserVersion(candidateId) {
   const match = String(candidateId || "").match(/:(parser-v\d+):/);
   return match ? match[1] : "";
 }
-function pruneStaleParserCandidates(value) {
-  const protectedIds = new Set([
-    ...(value.approvedCandidateIds || []),
-    ...(value.testSampleIds || [])
-  ]);
-  return {
-    ...value,
-    candidates: (value.candidates || []).filter(candidate => {
-      if (protectedIds.has(candidate.candidateId)) return true;
-      if (["APPROVED", "APPROVED_STATE", "TEST_ACCEPTED"].includes(candidate.status)) return true;
-      const version = candidateParserVersion(candidate.candidateId);
-      return !version || version === PARSER_VERSION;
-    })
-  };
-}
 
 let state = loadState();
 
 function loadState() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return emptyState();
-    const normalized = normalizeState(JSON.parse(raw));
-    const pruned = pruneStaleParserCandidates(normalized);
-    if (pruned.candidates.length !== normalized.candidates.length) {
-      localStorage.setItem(KEY, JSON.stringify(pruned));
-    }
-    return pruned;
+    return raw ? normalizeState(JSON.parse(raw)) : emptyState();
   } catch {
     return emptyState();
   }
@@ -395,13 +374,33 @@ function stableSourceSignature(candidate) {
   if (match) return (candidate.sourceName || match[1]) + ":" + match[2];
   return candidate.sourceName || "";
 }
-function replacePendingCandidatesForSource(existing, incoming, approvedIds, testIds) {
-  const incomingSignatures = new Set(incoming.map(stableSourceSignature).filter(Boolean));
+function reconcileCandidateReplay(existing, incoming, approvedIds, testIds) {
+  if (!incoming.length) return { candidates: existing, added: 0, preservedRecognized: false };
+  const signature = stableSourceSignature(incoming[0]);
   const protectedIds = new Set([...(approvedIds || []), ...(testIds || [])]);
-  return existing.filter(candidate => !(
-    incomingSignatures.has(stableSourceSignature(candidate)) &&
-    !protectedIds.has(candidate.candidateId)
-  ));
+  const sameSource = existing.filter(candidate => stableSourceSignature(candidate) === signature);
+  const sameSourceUnprotected = sameSource.filter(candidate => !protectedIds.has(candidate.candidateId));
+  const existingRecognized = sameSourceUnprotected.some(candidate => candidate.documentFamily !== "UNKNOWN");
+  const incomingRecognized = incoming.some(candidate => candidate.documentFamily !== "UNKNOWN");
+
+  if (!incomingRecognized && existingRecognized) {
+    return { candidates: existing, added: 0, preservedRecognized: true };
+  }
+
+  const kept = existing.filter(candidate => {
+    if (stableSourceSignature(candidate) !== signature) return true;
+    return protectedIds.has(candidate.candidateId);
+  });
+  let added = 0;
+  incoming.forEach(candidate => {
+    const known = kept.some(item => item.candidateId === candidate.candidateId) ||
+      protectedIds.has(candidate.candidateId);
+    if (!known) {
+      kept.push(candidate);
+      added += 1;
+    }
+  });
+  return { candidates: kept, added, preservedRecognized: false };
 }
 function readFileAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
@@ -961,18 +960,17 @@ if (autoDocumentForm) {
           continue;
         }
         const candidates = parseCandidates(text, file, mode);
-        state.candidates = replacePendingCandidatesForSource(
+        const reconciled = reconcileCandidateReplay(
           state.candidates,
           candidates,
           state.approvedCandidateIds,
           state.testSampleIds
         );
-        candidates.forEach(candidate => {
-          const known = state.candidates.some(x => x.candidateId === candidate.candidateId) ||
-                        state.approvedCandidateIds.includes(candidate.candidateId) ||
-                        state.testSampleIds.includes(candidate.candidateId);
-          if (!known) { state.candidates.push(candidate); added += 1; }
-        });
+        state.candidates = reconciled.candidates;
+        added += reconciled.added;
+        if (reconciled.preservedRecognized) {
+          errors.push(file.name + ": az új feldolgozás nem adott jobb felismerést; a korábbi felismert review-csoportot megtartottuk.");
+        }
       } catch (err) {
         errors.push(file.name + ": " + (err.message || "feldolgozási hiba"));
       }
