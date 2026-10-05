@@ -2,8 +2,8 @@ const YEAR = 2026;
 const RATE = 0.15;
 const KEY = "pebble-rental-tax-2026-v1";
 const BACKUP_SCHEMA_VERSION = 1;
-const PARSER_VERSION = "parser-v2";
-const APP_BUILD_VERSION = "2026.10.05.1";
+const PARSER_VERSION = "parser-v3";
+const APP_BUILD_VERSION = "2026.10.05.2";
 
 const emptyState = () => ({
   master: {
@@ -312,14 +312,22 @@ function sourceKey(file) {
 function candidateId(file, suffix) {
   return sourceKey(file) + ":" + PARSER_VERSION + ":" + suffix;
 }
+function candidateNeedsAttention(fields) {
+  const amount = Number(fields.amount || 0);
+  if ((fields.documentFamily || "UNKNOWN") === "UNKNOWN") return true;
+  if (amount <= 0) return true;
+  if (fields.documentFamily === "COMMON_COST_STATEMENT" && amount < 1000) return true;
+  return false;
+}
 function makeCandidate(file, mode, suffix, fields) {
+  const needsAttention = candidateNeedsAttention(fields);
   return {
     candidateId: candidateId(file, suffix),
     sourceKey: sourceKey(file),
     sourceName: file.name,
     mode,
-    status: "PENDING_REVIEW",
-    confidence: fields.confidence || "MEDIUM",
+    status: needsAttention ? "ATTENTION_REQUIRED" : "PENDING_REVIEW",
+    confidence: needsAttention ? "LOW" : (fields.confidence || "MEDIUM"),
     documentFamily: fields.documentFamily || "UNKNOWN",
     documentId: fields.documentId || suffix,
     label: fields.label || suffix,
@@ -333,6 +341,28 @@ function makeCandidate(file, mode, suffix, fields) {
     treatment: fields.treatment || "REVIEW_REQUIRED",
     note: fields.note || ""
   };
+}
+function candidateGroups(candidates) {
+  const groups = [];
+  const byKey = new Map();
+  candidates.forEach(candidate => {
+    const key = candidate.sourceKey || candidate.sourceName;
+    if (!byKey.has(key)) {
+      const group = {key, sourceName:candidate.sourceName, candidates:[]};
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    byKey.get(key).candidates.push(candidate);
+  });
+  return groups;
+}
+function familyLabel(value) {
+  return ({
+    RENTAL_INVOICE:"Bérleti számla",
+    UTILITY_BUNDLE:"Közüzemi számlacsomag",
+    COMMON_COST_STATEMENT:"Közös költség elszámolás",
+    UNKNOWN:"Nem felismert dokumentum"
+  })[value] || value;
 }
 function readFileAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
@@ -520,12 +550,15 @@ function parseCommonCostStatement(text, file, mode) {
   const out = [];
   const yearMatch = text.match(/(20\d{2})\.01\.01/);
   const year = yearMatch ? Number(yearMatch[1]) : YEAR;
-  const rowRe = /(\d{1,2})\.\s*hó\s+([0-9 ]+)\s+([0-9 ]+)\s+([0-9 ]+)\s+([0-9 ]+)/g;
-  let m;
-  while ((m = rowRe.exec(text)) !== null) {
-    const month = Number(m[1]);
-    const total = compactHuf(m[5]);
-    if (!month || month > 12 || !total) continue;
+  text.split(/\n/).forEach(line => {
+    const monthMatch = line.match(/^\s*(\d{1,2})\.\s*hó\s+(.+)$/i);
+    if (!monthMatch) return;
+    const month = Number(monthMatch[1]);
+    if (!month || month > 12) return;
+    const values = monthMatch[2].match(/\d{1,3}(?: \d{3})*/g) || [];
+    if (values.length !== 4) return;
+    const [commonCost, renovationFund, waterFee, total] = values.map(compactHuf);
+    if (!total || commonCost + renovationFund + waterFee !== total) return;
     const start = year + "-" + String(month).padStart(2,"0") + "-01";
     const endDay = new Date(year, month, 0).getDate();
     const end = year + "-" + String(month).padStart(2,"0") + "-" + String(endDay).padStart(2,"0");
@@ -540,9 +573,9 @@ function parseCommonCostStatement(text, file, mode) {
       kind:"COMMON_COST_EXPENSE",
       treatment:"REVIEW_REQUIRED",
       confidence:"HIGH",
-      note:"Az előírás biztosan kinyerhető. A befizetési sorokat nem párosítjuk automatikusan."
+      note:"A havi összes előírás a közös költség, felújítási alap és vízdíj komponensek ellenőrzött összege. A befizetési sorokat nem párosítjuk automatikusan."
     }));
-  }
+  });
   return out;
 }
 function parseCandidates(text, file, mode) {
@@ -570,24 +603,44 @@ function renderCandidates() {
   const body = document.getElementById("candidate-table");
   if (!panel || !body) return;
   panel.hidden = !state.candidates.length;
-  document.getElementById("candidate-count").textContent = state.candidates.length + " javaslat";
-  body.innerHTML = state.candidates.map(c => {
-    const modeLabel = c.mode === "TEST_SAMPLE" ? "TEST" : "LIVE";
-    const disabled = c.status !== "PENDING_REVIEW" ? " disabled" : "";
-    const buttonLabel = c.mode === "TEST_SAMPLE" ? "Teszt rendben" : (c.documentFamily === "COMMON_COST_STATEMENT" ? "Állapot jóváhagyása" : "Jóváhagyás");
-    return '<tr data-candidate="' + c.candidateId.replace(/"/g,"&quot;") + '">' +
-      '<td><strong>' + c.label + '</strong><br><span class="muted">' + c.sourceName + ' · ' + c.documentFamily + ' · ' + modeLabel + '</span></td>' +
-      '<td>' + huf(c.amount) + '</td>' +
-      '<td>' + (c.observedDate || "–") + '</td>' +
-      '<td>' + (c.dueDate || "–") + '</td>' +
-      '<td><input class="candidate-tax-date" type="date" value="' + (c.taxDate || "") + '"' + disabled + '></td>' +
-      '<td>' + (c.serviceStart || "–") + ' → ' + (c.serviceEnd || "–") + '</td>' +
-      '<td><select class="candidate-treatment"' + disabled + '>' + treatmentOptions(c.treatment) + '</select></td>' +
-      '<td>' + c.status + '<br><span class="muted">' + c.confidence + '</span></td>' +
-      '<td><button class="ghost candidate-approve"' + disabled + '>' + buttonLabel + '</button></td></tr>';
+  const groups = candidateGroups(state.candidates);
+  const attentionCount = state.candidates.filter(c => c.status === "ATTENTION_REQUIRED").length;
+  document.getElementById("candidate-count").textContent =
+    groups.length + " dokumentum · " + state.candidates.length + " tétel" +
+    (attentionCount ? " · " + attentionCount + " ellenőrzendő" : "");
+  body.innerHTML = groups.map(group => {
+    const families = [...new Set(group.candidates.map(c => familyLabel(c.documentFamily)))].join(", ");
+    const header = '<tr class="candidate-group"><td colspan="9"><strong>' +
+      group.sourceName + '</strong><br><span class="muted">' +
+      group.candidates.length + ' tétel · ' + families + '</span></td></tr>';
+    const rows = group.candidates.map(c => {
+      const modeLabel = c.mode === "TEST_SAMPLE" ? "TEST" : "LIVE";
+      const attention = c.status === "ATTENTION_REQUIRED";
+      const disabled = c.status !== "PENDING_REVIEW" ? " disabled" : "";
+      const buttonLabel = c.mode === "TEST_SAMPLE" ? "Teszt rendben" :
+        (c.documentFamily === "COMMON_COST_STATEMENT" ? "Állapot jóváhagyása" : "Jóváhagyás");
+      const statusLabel = attention ? "ELLENŐRZÉS SZÜKSÉGES" :
+        (c.status === "PENDING_REVIEW" ? "Jóváhagyásra vár" : c.status);
+      return '<tr class="' + (attention ? 'candidate-attention' : '') + '" data-candidate="' +
+        c.candidateId.replace(/"/g,"&quot;") + '">' +
+        '<td><strong>' + c.label + '</strong><br><span class="muted">' +
+        familyLabel(c.documentFamily) + ' · ' + modeLabel + '</span>' +
+        (attention ? '<br><span class="warning">' + c.note + '</span>' : '') + '</td>' +
+        '<td>' + huf(c.amount) + '</td>' +
+        '<td>' + (c.observedDate || "–") + '</td>' +
+        '<td>' + (c.dueDate || "–") + '</td>' +
+        '<td><input class="candidate-tax-date" type="date" value="' + (c.taxDate || "") + '"' + disabled + '></td>' +
+        '<td>' + (c.serviceStart || "–") + ' → ' + (c.serviceEnd || "–") + '</td>' +
+        '<td><select class="candidate-treatment"' + disabled + '>' + treatmentOptions(c.treatment) + '</select></td>' +
+        '<td>' + statusLabel + '<br><span class="muted">' + c.confidence + '</span></td>' +
+        '<td>' + (attention ? '<span class="muted">Nem jóváhagyható</span>' :
+          '<button class="ghost candidate-approve"' + disabled + '>' + buttonLabel + '</button>') + '</td></tr>';
+    }).join("");
+    return header + rows;
   }).join("");
   body.querySelectorAll(".candidate-approve").forEach(btn => btn.addEventListener("click", approveCandidateFromRow));
 }
+
 function approveCandidateFromRow(event) {
   const row = event.currentTarget.closest("tr");
   const id = row.dataset.candidate;
